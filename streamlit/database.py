@@ -534,14 +534,18 @@ def get_statistics():
             row = cur.fetchone()
 
             overview = {
-                "event_count": row[0],
-                "total_events": row[0],
-                "user_count": row[1],
-                "total_users": row[1],
-                "registration_count": row[2],
-                "total_registrations": row[2],
-                "upcoming_events": row[3],
-            }
+    "event_count": row[0],
+    "total_events": row[0],
+
+    "user_count": row[1],
+    "total_users": row[1],
+
+    "registration_count": row[2],
+    "total_registrations": row[2],
+
+    "upcoming_events": row[3],
+    "upcoming_count": row[3],
+}
 
             # Ən populyar tədbirlər
             cur.execute("""
