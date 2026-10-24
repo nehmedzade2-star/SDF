@@ -1,4 +1,4 @@
-```python
+
 import psycopg2
 import streamlit as st
 
@@ -388,4 +388,3 @@ def get_statistics():
             }
     finally:
         conn.close()
-```
