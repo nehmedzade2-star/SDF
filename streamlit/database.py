@@ -1,36 +1,66 @@
 import psycopg2
-from psycopg2.extras import RealDictCursor
-
-DATABASE_URL = "postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require"
+import streamlit as st
 
 
 def get_connection():
     return psycopg2.connect(
-        DATABASE_URL,
-        cursor_factory=RealDictCursor
+        st.secrets["DATABASE_URL"]
     )
 
 
-def query(sql, params=None, fetchone=False, fetchall=False):
+def create_table():
     conn = get_connection()
 
     try:
-        with conn.cursor() as cursor:
-            cursor.execute(sql, params or ())
-
-            if fetchone:
-                result = cursor.fetchone()
-            elif fetchall:
-                result = cursor.fetchall()
-            else:
-                result = None
-
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS students (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL,
+                    score NUMERIC(5, 2) NOT NULL
+                )
+            """)
         conn.commit()
-        return result
+    finally:
+        conn.close()
 
-    except Exception:
-        conn.rollback()
-        raise
 
+def add_student(name, score):
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO students (name, score) VALUES (%s, %s)",
+                (name, score)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_students():
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, score FROM students ORDER BY id DESC"
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def delete_student(student_id):
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM students WHERE id = %s",
+                (student_id,)
+            )
+        conn.commit()
     finally:
         conn.close()
