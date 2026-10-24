@@ -1,4 +1,4 @@
-```python
+
 import psycopg2
 import streamlit as st
 from datetime import datetime
@@ -543,4 +543,3 @@ def get_statistics():
 
     finally:
         conn.close()
-```
