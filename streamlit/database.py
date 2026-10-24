@@ -1,7 +1,5 @@
-
 import psycopg2
 import streamlit as st
-from datetime import datetime
 
 
 # ==================================================
@@ -15,7 +13,7 @@ def get_connection():
 
 
 # ==================================================
-# CREATE TABLES
+# INITIALIZE DATABASE
 # ==================================================
 
 def init_db():
@@ -64,8 +62,7 @@ def init_db():
                     event_id INTEGER
                         REFERENCES events(id)
                         ON DELETE CASCADE,
-                    registered_at TIMESTAMP
-                        DEFAULT CURRENT_TIMESTAMP,
+                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (user_id, event_id)
                 )
             """)
@@ -88,6 +85,11 @@ def init_db():
 
     finally:
         conn.close()
+
+
+# Backwards compatibility for code that calls create_table()
+def create_table():
+    init_db()
 
 
 # ==================================================
@@ -116,8 +118,6 @@ def get_categories():
 
 # ==================================================
 # LIST AND FILTER EVENTS
-# Supports search, category, location,
-# date_from, date_to and event_date.
 # ==================================================
 
 def list_events(
@@ -269,7 +269,6 @@ def save_event(
                 ))
 
             else:
-                # Yeni limit mövcud qeydiyyatlardan aşağı ola bilməz.
                 cur.execute("""
                     SELECT COUNT(*)
                     FROM registrations
@@ -304,9 +303,7 @@ def save_event(
                     event_id,
                 ))
 
-            result = cur.fetchone()
-
-            if result is None:
+            if cur.fetchone() is None:
                 raise ValueError("Tədbir tapılmadı.")
 
         conn.commit()
@@ -356,10 +353,12 @@ def register_for_event(user_id, event_id):
 
     try:
         with conn.cursor() as cur:
-            # Tədbir sətrini kilidləyərək eyni anda
-            # baş verən qeydiyyatların limitə təsirini qoruyuruq.
+            # Tədbir sətrini kilidlə ki, paralel qeydiyyatlar
+            # iştirakçı limitini aşmasın.
             cur.execute("""
-                SELECT capacity, event_date
+                SELECT
+                    capacity,
+                    event_date >= CURRENT_TIMESTAMP
                 FROM events
                 WHERE id = %s
                 FOR UPDATE
@@ -371,24 +370,12 @@ def register_for_event(user_id, event_id):
                 conn.rollback()
                 return False, "Tədbir tapılmadı."
 
-            capacity, event_date = event
+            capacity, is_upcoming = event
 
-            if event_date < datetime.now():
+            if not is_upcoming:
                 conn.rollback()
                 return False, "Keçmiş tədbirə qeydiyyat mümkün deyil."
 
-            # İstifadəçinin mövcud qeydiyyatını yoxla.
-            cur.execute("""
-                SELECT id
-                FROM registrations
-                WHERE user_id = %s AND event_id = %s
-            """, (user_id, event_id))
-
-            if cur.fetchone():
-                conn.rollback()
-                return False, "Siz artıq bu tədbirə qeydiyyatdan keçmisiniz."
-
-            # İstifadəçinin mövcudluğunu yoxla.
             cur.execute("""
                 SELECT id
                 FROM users
@@ -399,7 +386,16 @@ def register_for_event(user_id, event_id):
                 conn.rollback()
                 return False, "İstifadəçi tapılmadı."
 
-            # Hazırkı iştirakçı sayını hesabla.
+            cur.execute("""
+                SELECT id
+                FROM registrations
+                WHERE user_id = %s AND event_id = %s
+            """, (user_id, event_id))
+
+            if cur.fetchone():
+                conn.rollback()
+                return False, "Siz artıq bu tədbirə qeydiyyatdan keçmisiniz."
+
             cur.execute("""
                 SELECT COUNT(*)
                 FROM registrations
@@ -462,7 +458,7 @@ def cancel_registration(user_id, event_id):
 
 
 # ==================================================
-# GET USER REGISTRATIONS
+# USER REGISTRATIONS
 # ==================================================
 
 def get_user_registrations(user_id):
@@ -512,7 +508,9 @@ def get_user_registrations(user_id):
 
 
 # ==================================================
-# DASHBOARD STATISTICS
+# STATISTICS
+# Returns exactly 3 values:
+# overview, popular, by_category
 # ==================================================
 
 def get_statistics():
@@ -520,6 +518,7 @@ def get_statistics():
 
     try:
         with conn.cursor() as cur:
+            # 1. General overview
             cur.execute("""
                 SELECT
                     (SELECT COUNT(*) FROM events),
@@ -534,12 +533,57 @@ def get_statistics():
 
             row = cur.fetchone()
 
-            return {
+            overview = {
                 "total_events": row[0],
                 "total_users": row[1],
                 "total_registrations": row[2],
                 "upcoming_events": row[3],
             }
+
+            # 2. Most popular events
+            cur.execute("""
+                SELECT
+                    e.id,
+                    e.title,
+                    COUNT(r.id) AS registered_count
+                FROM events e
+                LEFT JOIN registrations r
+                    ON r.event_id = e.id
+                GROUP BY e.id, e.title
+                ORDER BY registered_count DESC, e.title ASC
+                LIMIT 5
+            """)
+
+            popular = [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "registered_count": row[2],
+                }
+                for row in cur.fetchall()
+            ]
+
+            # 3. Event counts by category
+            cur.execute("""
+                SELECT
+                    COALESCE(c.name, 'Kateqoriyasız') AS category,
+                    COUNT(e.id) AS event_count
+                FROM events e
+                LEFT JOIN categories c
+                    ON c.id = e.category_id
+                GROUP BY c.name
+                ORDER BY event_count DESC, category ASC
+            """)
+
+            by_category = [
+                {
+                    "category": row[0],
+                    "event_count": row[1],
+                }
+                for row in cur.fetchall()
+            ]
+
+            return overview, popular, by_category
 
     finally:
         conn.close()
