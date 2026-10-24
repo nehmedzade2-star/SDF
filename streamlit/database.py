@@ -1,7 +1,12 @@
-
+```python
 import psycopg2
 import streamlit as st
+from datetime import datetime
 
+
+# ==================================================
+# DATABASE CONNECTION
+# ==================================================
 
 def get_connection():
     return psycopg2.connect(
@@ -9,12 +14,15 @@ def get_connection():
     )
 
 
+# ==================================================
+# CREATE TABLES
+# ==================================================
+
 def init_db():
     conn = get_connection()
 
     try:
         with conn.cursor() as cur:
-            # İstifadəçilər
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
@@ -24,7 +32,6 @@ def init_db():
                 )
             """)
 
-            # Tədbir kateqoriyaları
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS categories (
                     id SERIAL PRIMARY KEY,
@@ -32,34 +39,37 @@ def init_db():
                 )
             """)
 
-            # Tədbirlər
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id SERIAL PRIMARY KEY,
                     title VARCHAR(200) NOT NULL,
                     description TEXT,
-                    category_id INTEGER REFERENCES categories(id),
+                    category_id INTEGER
+                        REFERENCES categories(id)
+                        ON DELETE SET NULL,
                     event_date TIMESTAMP NOT NULL,
                     location VARCHAR(200) NOT NULL,
-                    capacity INTEGER NOT NULL CHECK (capacity > 0),
+                    capacity INTEGER NOT NULL
+                        CHECK (capacity > 0),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # Tədbir iştirakçıları
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS registrations (
                     id SERIAL PRIMARY KEY,
-                    user_id INTEGER REFERENCES users(id)
+                    user_id INTEGER
+                        REFERENCES users(id)
                         ON DELETE CASCADE,
-                    event_id INTEGER REFERENCES events(id)
+                    event_id INTEGER
+                        REFERENCES events(id)
                         ON DELETE CASCADE,
-                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    registered_at TIMESTAMP
+                        DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (user_id, event_id)
                 )
             """)
 
-            # İlkin kateqoriyalar
             cur.execute("""
                 INSERT INTO categories (name)
                 VALUES
@@ -71,31 +81,52 @@ def init_db():
             """)
 
         conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
     finally:
         conn.close()
 
+
+# ==================================================
+# CATEGORIES
+# ==================================================
 
 def get_categories():
     conn = get_connection()
 
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, name FROM categories ORDER BY name"
-            )
+            cur.execute("""
+                SELECT id, name
+                FROM categories
+                ORDER BY name
+            """)
+
             return [
                 {"id": row[0], "name": row[1]}
                 for row in cur.fetchall()
             ]
+
     finally:
         conn.close()
 
+
+# ==================================================
+# LIST AND FILTER EVENTS
+# Supports search, category, location,
+# date_from, date_to and event_date.
+# ==================================================
 
 def list_events(
     search="",
     category_id=None,
     location="",
-    event_date=None
+    event_date=None,
+    date_from=None,
+    date_to=None
 ):
     conn = get_connection()
 
@@ -107,7 +138,7 @@ def list_events(
                     e.title,
                     e.description,
                     e.category_id,
-                    c.name,
+                    c.name AS category,
                     e.event_date,
                     e.location,
                     e.capacity,
@@ -117,25 +148,34 @@ def list_events(
                     ON c.id = e.category_id
                 LEFT JOIN registrations r
                     ON r.event_id = e.id
-                WHERE (
-                    %s = ''
-                    OR e.title ILIKE %s
-                    OR COALESCE(e.description, '') ILIKE %s
-                )
-                AND (
-                    %s IS NULL
-                    OR e.category_id = %s
-                )
-                AND (
-                    %s = ''
-                    OR e.location ILIKE %s
-                )
-                AND (
-                    %s IS NULL
-                    OR e.event_date::date = %s
-                )
+                WHERE
+                    (
+                        %s = ''
+                        OR e.title ILIKE %s
+                        OR COALESCE(e.description, '') ILIKE %s
+                    )
+                    AND (
+                        %s IS NULL
+                        OR e.category_id = %s
+                    )
+                    AND (
+                        %s = ''
+                        OR e.location ILIKE %s
+                    )
+                    AND (
+                        %s IS NULL
+                        OR e.event_date::date >= %s
+                    )
+                    AND (
+                        %s IS NULL
+                        OR e.event_date::date <= %s
+                    )
+                    AND (
+                        %s IS NULL
+                        OR e.event_date::date = %s
+                    )
                 GROUP BY e.id, c.name
-                ORDER BY e.event_date
+                ORDER BY e.event_date ASC
             """
 
             search_pattern = f"%{search}%"
@@ -151,6 +191,10 @@ def list_events(
                     category_id,
                     location,
                     location_pattern,
+                    date_from,
+                    date_from,
+                    date_to,
+                    date_to,
                     event_date,
                     event_date,
                 )
@@ -172,9 +216,14 @@ def list_events(
                 dict(zip(columns, row))
                 for row in cur.fetchall()
             ]
+
     finally:
         conn.close()
 
+
+# ==================================================
+# CREATE OR UPDATE EVENT
+# ==================================================
 
 def save_event(
     title,
@@ -185,6 +234,15 @@ def save_event(
     capacity,
     event_id=None
 ):
+    if not title or not title.strip():
+        raise ValueError("Tədbirin adı boş ola bilməz.")
+
+    if not location or not location.strip():
+        raise ValueError("Tədbirin yeri boş ola bilməz.")
+
+    if capacity <= 0:
+        raise ValueError("İştirakçı limiti sıfırdan böyük olmalıdır.")
+
     conn = get_connection()
 
     try:
@@ -200,15 +258,32 @@ def save_event(
                         capacity
                     )
                     VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
                 """, (
-                    title,
+                    title.strip(),
                     description,
                     category_id,
                     event_date,
-                    location,
+                    location.strip(),
                     capacity,
                 ))
+
             else:
+                # Yeni limit mövcud qeydiyyatlardan aşağı ola bilməz.
+                cur.execute("""
+                    SELECT COUNT(*)
+                    FROM registrations
+                    WHERE event_id = %s
+                """, (event_id,))
+
+                registered_count = cur.fetchone()[0]
+
+                if capacity < registered_count:
+                    raise ValueError(
+                        "İştirakçı limiti mövcud qeydiyyat sayından "
+                        "az ola bilməz."
+                    )
+
                 cur.execute("""
                     UPDATE events
                     SET title = %s,
@@ -218,46 +293,91 @@ def save_event(
                         location = %s,
                         capacity = %s
                     WHERE id = %s
+                    RETURNING id
                 """, (
-                    title,
+                    title.strip(),
                     description,
                     category_id,
                     event_date,
-                    location,
+                    location.strip(),
                     capacity,
                     event_id,
                 ))
 
+            result = cur.fetchone()
+
+            if result is None:
+                raise ValueError("Tədbir tapılmadı.")
+
         conn.commit()
         return True
+
     except Exception:
         conn.rollback()
         raise
+
     finally:
         conn.close()
 
+
+# ==================================================
+# DELETE EVENT
+# ==================================================
 
 def delete_event(event_id):
     conn = get_connection()
 
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM events WHERE id = %s",
-                (event_id,)
-            )
+            cur.execute("""
+                DELETE FROM events
+                WHERE id = %s
+            """, (event_id,))
+
+            deleted = cur.rowcount
 
         conn.commit()
+        return deleted > 0
+
+    except Exception:
+        conn.rollback()
+        raise
+
     finally:
         conn.close()
 
+
+# ==================================================
+# REGISTER FOR EVENT
+# ==================================================
 
 def register_for_event(user_id, event_id):
     conn = get_connection()
 
     try:
         with conn.cursor() as cur:
-            # Eyni istifadəçi eyni tədbirə ikinci dəfə yazıla bilməz.
+            # Tədbir sətrini kilidləyərək eyni anda
+            # baş verən qeydiyyatların limitə təsirini qoruyuruq.
+            cur.execute("""
+                SELECT capacity, event_date
+                FROM events
+                WHERE id = %s
+                FOR UPDATE
+            """, (event_id,))
+
+            event = cur.fetchone()
+
+            if event is None:
+                conn.rollback()
+                return False, "Tədbir tapılmadı."
+
+            capacity, event_date = event
+
+            if event_date < datetime.now():
+                conn.rollback()
+                return False, "Keçmiş tədbirə qeydiyyat mümkün deyil."
+
+            # İstifadəçinin mövcud qeydiyyatını yoxla.
             cur.execute("""
                 SELECT id
                 FROM registrations
@@ -265,33 +385,31 @@ def register_for_event(user_id, event_id):
             """, (user_id, event_id))
 
             if cur.fetchone():
+                conn.rollback()
                 return False, "Siz artıq bu tədbirə qeydiyyatdan keçmisiniz."
 
-            # Tədbirin mövcudluğunu və boş yerləri yoxla.
+            # İstifadəçinin mövcudluğunu yoxla.
             cur.execute("""
-                SELECT
-                    e.capacity,
-                    COUNT(r.id),
-                    e.event_date
-                FROM events e
-                LEFT JOIN registrations r
-                    ON r.event_id = e.id
-                WHERE e.id = %s
-                GROUP BY e.id
-                FOR UPDATE OF e
+                SELECT id
+                FROM users
+                WHERE id = %s
+            """, (user_id,))
+
+            if cur.fetchone() is None:
+                conn.rollback()
+                return False, "İstifadəçi tapılmadı."
+
+            # Hazırkı iştirakçı sayını hesabla.
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM registrations
+                WHERE event_id = %s
             """, (event_id,))
 
-            event = cur.fetchone()
-
-            if event is None:
-                return False, "Tədbir tapılmadı."
-
-            capacity, registered_count, event_date = event
-
-            if event_date < __import__("datetime").datetime.now():
-                return False, "Keçmiş tədbirə qeydiyyat mümkün deyil."
+            registered_count = cur.fetchone()[0]
 
             if registered_count >= capacity:
+                conn.rollback()
                 return False, "Tədbirdə boş yer qalmayıb."
 
             cur.execute("""
@@ -300,14 +418,24 @@ def register_for_event(user_id, event_id):
                 ON CONFLICT (user_id, event_id) DO NOTHING
             """, (user_id, event_id))
 
+            if cur.rowcount == 0:
+                conn.rollback()
+                return False, "Siz artıq bu tədbirə qeydiyyatdan keçmisiniz."
+
         conn.commit()
         return True, "Qeydiyyat uğurla tamamlandı."
+
     except Exception:
         conn.rollback()
         raise
+
     finally:
         conn.close()
 
+
+# ==================================================
+# CANCEL REGISTRATION
+# ==================================================
 
 def cancel_registration(user_id, event_id):
     conn = get_connection()
@@ -316,16 +444,26 @@ def cancel_registration(user_id, event_id):
         with conn.cursor() as cur:
             cur.execute("""
                 DELETE FROM registrations
-                WHERE user_id = %s AND event_id = %s
+                WHERE user_id = %s
+                  AND event_id = %s
             """, (user_id, event_id))
 
             deleted = cur.rowcount
 
         conn.commit()
         return deleted > 0
+
+    except Exception:
+        conn.rollback()
+        raise
+
     finally:
         conn.close()
 
+
+# ==================================================
+# GET USER REGISTRATIONS
+# ==================================================
 
 def get_user_registrations(user_id):
     conn = get_connection()
@@ -338,11 +476,20 @@ def get_user_registrations(user_id):
                     e.title,
                     e.event_date,
                     e.location,
-                    e.capacity
+                    e.capacity,
+                    c.name AS category,
+                    (
+                        SELECT COUNT(*)
+                        FROM registrations r2
+                        WHERE r2.event_id = e.id
+                    ) AS registered_count
                 FROM registrations r
-                JOIN events e ON e.id = r.event_id
+                JOIN events e
+                    ON e.id = r.event_id
+                LEFT JOIN categories c
+                    ON c.id = e.category_id
                 WHERE r.user_id = %s
-                ORDER BY e.event_date
+                ORDER BY e.event_date ASC
             """, (user_id,))
 
             columns = [
@@ -351,15 +498,22 @@ def get_user_registrations(user_id):
                 "event_date",
                 "location",
                 "capacity",
+                "category",
+                "registered_count",
             ]
 
             return [
                 dict(zip(columns, row))
                 for row in cur.fetchall()
             ]
+
     finally:
         conn.close()
 
+
+# ==================================================
+# DASHBOARD STATISTICS
+# ==================================================
 
 def get_statistics():
     conn = get_connection()
@@ -386,5 +540,7 @@ def get_statistics():
                 "total_registrations": row[2],
                 "upcoming_events": row[3],
             }
+
     finally:
         conn.close()
+```
