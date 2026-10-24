@@ -518,7 +518,7 @@ def get_statistics():
 
     try:
         with conn.cursor() as cur:
-            # 1. General overview
+            # Ümumi statistika
             cur.execute("""
                 SELECT
                     (SELECT COUNT(*) FROM events),
@@ -534,13 +534,16 @@ def get_statistics():
             row = cur.fetchone()
 
             overview = {
+                "event_count": row[0],
                 "total_events": row[0],
+                "user_count": row[1],
                 "total_users": row[1],
+                "registration_count": row[2],
                 "total_registrations": row[2],
                 "upcoming_events": row[3],
             }
 
-            # 2. Most popular events
+            # Ən populyar tədbirlər
             cur.execute("""
                 SELECT
                     e.id,
@@ -550,7 +553,7 @@ def get_statistics():
                 LEFT JOIN registrations r
                     ON r.event_id = e.id
                 GROUP BY e.id, e.title
-                ORDER BY registered_count DESC, e.title ASC
+                ORDER BY registered_count DESC, e.title
                 LIMIT 5
             """)
 
@@ -563,7 +566,7 @@ def get_statistics():
                 for row in cur.fetchall()
             ]
 
-            # 3. Event counts by category
+            # Kateqoriyalara görə tədbirlər
             cur.execute("""
                 SELECT
                     COALESCE(c.name, 'Kateqoriyasız') AS category,
@@ -572,7 +575,7 @@ def get_statistics():
                 LEFT JOIN categories c
                     ON c.id = e.category_id
                 GROUP BY c.name
-                ORDER BY event_count DESC, category ASC
+                ORDER BY event_count DESC, category
             """)
 
             by_category = [
